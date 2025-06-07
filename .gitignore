@@ -1,0 +1,32 @@
+# IDE and Editor settings
+.vscode/
+.DS_Store
+
+# Node.js dependencies
+node_modules/
+
+# Build outputs
+dist/
+.next/
+.turbo/
+.output/
+
+# Python cache
+__pycache__/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+
+# Local database
+document_intelligence_meta.db
+
+# Python virtual environment
+.venv/
+
+# Uploaded documents and backups
+persistent_document_uploads/
+backups/
