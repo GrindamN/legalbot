@@ -93,7 +93,10 @@ SOURCE_NAME: [The identified source display name from the list, or UNKNOWN, or N
                 return True, "UNKNOWN", None, None
             else: return True, "UNKNOWN", None, None
         else: return False, None, None, None
-    except Exception as e: print(f"CONSOLE ERROR (app.py): Intent classification error: {e}\n{traceback.format_exc()}"); return False, None, None, None
+    except Exception as e:
+        # This print is for server-side debugging and will not appear in the Streamlit UI.
+        print(f"CONSOLE ERROR (app.py): Intent classification error: {e}\n{traceback.format_exc()}")
+        return False, None, None, None
 
 # --- Initializations & Page Config ---
 if not os.path.exists(config.PERSISTENT_UPLOADS_DIR):
@@ -121,6 +124,7 @@ def on_chat_mode_change_callback_v4():
     new_chat_mode = stlit.session_state.chat_mode_selector_radio_key_cb_v4; stlit.session_state.active_chat_mode = new_chat_mode
     stlit.session_state.update(rag_confirmation_pending=None, clarifying_document_for_rag=False, last_general_chat_query=None, last_selectbox_choice_for_rag_clarify=None, selectbox_choice_submitted=False)
     if new_chat_mode == "General Chat": stlit.session_state.update(active_retriever=None, document_processed_for_chat=False, active_document_filename=None, active_chain_settings={}, document_language=None, active_doc_chat_session_id=None, session_doc_selector_value="-- Select --", persisted_doc_selector_value="-- Select App-Stored Document --", direct_qdrant_selector_value="-- Select Direct Qdrant Collection --")
+
 with stlit.sidebar:
     llm_services.display_ollama_server_status_in_sidebar(config.OLLAMA_BASE_URL)
     if stlit.session_state.get("embeddings_generator"): stlit.sidebar.info(f"Embeddings ('{config.EMBEDDING_MODEL_NAME}') loaded.")
@@ -146,22 +150,43 @@ with stlit.sidebar:
         stlit.subheader("MMR Specific Settings"); mmr_lambda_val = stlit.slider("MMR Lambda (Diversity):", 0.0, 1.0, 0.5, 0.1, key="mmr_lambda_sidebar_app_key_v4_lcel_final_complete")
         mmr_fetch_k_factor_val = stlit.slider("MMR Fetch K Multiplier:", 2.0, 10.0, 5.0, 0.5, key="mmr_fetch_k_sidebar_app_key_v4_lcel_final_complete")
     use_map_reduce_ui = stlit.checkbox("Summarize Chunks (Map-Reduce for Doc Q&A)", value=False, key="map_reduce_sidebar_app_key_v4_lcel_final_complete")
+
     def build_retriever(doc_chunks_for_retriever, vs_choice, sem_type, k_val, hybrid_flag, bm25_w_val, sem_w_val, mmr_l_val, mmr_fkf_val, q_coll_name=None, embed_gen_instance=None, q_url_val=None, q_api_key_val=None, qdrant_client_for_existing=None):
-        vectorstore_for_retriever = None; final_retriever_obj = None
-        if hybrid_flag and not doc_chunks_for_retriever: stlit.sidebar.warning("Hybrid search disabled - no text chunks for BM25"); hybrid_flag = False
+        vectorstore_for_retriever = None
+        final_retriever_obj = None
+        
+        if hybrid_flag and not doc_chunks_for_retriever:
+            stlit.sidebar.warning("Hybrid search disabled - no text chunks for BM25.")
+            hybrid_flag = False
+
         if vs_choice == "FAISS":
             if doc_chunks_for_retriever and embed_gen_instance:
-                try: vectorstore_for_retriever = FAISS.from_documents(documents=doc_chunks_for_retriever, embedding=embed_gen_instance)
-                except Exception as e: stlit.sidebar.error(f"FAISS retriever setup error: {e}"); return None
-            else: stlit.sidebar.error("FAISS: Chunks or embeddings missing."); return None
+                try:
+                    vectorstore_for_retriever = FAISS.from_documents(documents=doc_chunks_for_retriever, embedding=embed_gen_instance)
+                except Exception as e:
+                    stlit.sidebar.error(f"FAISS retriever setup error: {e}")
+                    return None
+            else:
+                stlit.sidebar.error("FAISS: Chunks or embeddings missing.")
+                return None
         elif vs_choice == "Qdrant":
-            if not q_coll_name or not embed_gen_instance: stlit.sidebar.error("Qdrant: Collection name or embeddings missing."); return None
+            if not q_coll_name or not embed_gen_instance:
+                stlit.sidebar.error("Qdrant: Collection name or embeddings missing.")
+                return None
+            
             q_client_to_use = qdrant_client_for_existing if qdrant_client_for_existing else QdrantSDKClient(url=q_url_val, api_key=q_api_key_val, timeout=20)
+            
             try:
                 vectorstore_for_retriever = QdrantVectorStore(client=q_client_to_use, collection_name=q_coll_name, embedding=embed_gen_instance)
-                try: q_client_to_use.get_collection(collection_name=q_coll_name); stlit.sidebar.success(f"Initialized QdrantVS for existing '{q_coll_name}'.")
-                except Exception as e_verify: stlit.sidebar.warning(f"QdrantVS for '{q_coll_name}' init but SDK reports: {type(e_verify).__name__} - {str(e_verify)}. May be empty.")
-            except Exception as e_init_qdrant: stlit.sidebar.warning(f"Access Qdrant coll '{q_coll_name}' failed: {type(e_init_qdrant).__name__} - {str(e_init_qdrant)}"); vectorstore_for_retriever = None
+                try:
+                    q_client_to_use.get_collection(collection_name=q_coll_name)
+                    stlit.sidebar.success(f"Initialized QdrantVS for existing '{q_coll_name}'.")
+                except Exception as e_verify:
+                    stlit.sidebar.warning(f"QdrantVS for '{q_coll_name}' init but SDK reports: {type(e_verify).__name__} - {str(e_verify)}. May be empty.")
+            except Exception as e_init_qdrant:
+                stlit.sidebar.warning(f"Access Qdrant coll '{q_coll_name}' failed: {type(e_init_qdrant).__name__} - {str(e_init_qdrant)}")
+                vectorstore_for_retriever = None
+
             if not vectorstore_for_retriever and doc_chunks_for_retriever:
                 try:
                     stlit.sidebar.info(f"Attempting to create/recreate Qdrant coll '{q_coll_name}' from documents...")
@@ -170,19 +195,47 @@ with stlit.sidebar:
                             doc.metadata['source'] = os.path.basename(doc.metadata['source'])
                     vectorstore_for_retriever = QdrantVectorStore.from_documents(documents=doc_chunks_for_retriever, embedding=embed_gen_instance, url=q_url_val, api_key=q_api_key_val, collection_name=q_coll_name, force_recreate=True)
                     stlit.sidebar.success(f"CREATED/RECREATED QdrantVS for '{q_coll_name}'.")
-                except Exception as e_create: stlit.sidebar.error(f"Qdrant from_documents FAILED for '{q_coll_name}': {type(e_create).__name__} - {str(e_create)}"); return None
-            elif not vectorstore_for_retriever: stlit.sidebar.error(f"Qdrant coll '{q_coll_name}' not init, no docs to create it."); return None
-        else: stlit.sidebar.error(f"Invalid vector store choice: {vs_choice}"); return None
-        if not vectorstore_for_retriever: stlit.sidebar.error("Vector store failed to initialize."); return None
+                except Exception as e_create:
+                    stlit.sidebar.error(f"Qdrant from_documents FAILED for '{q_coll_name}': {type(e_create).__name__} - {str(e_create)}")
+                    return None
+            elif not vectorstore_for_retriever:
+                stlit.sidebar.error(f"Qdrant coll '{q_coll_name}' not init, no docs to create it.")
+                return None
+        else:
+            stlit.sidebar.error(f"Invalid vector store choice: {vs_choice}")
+            return None
+
+        if not vectorstore_for_retriever:
+            stlit.sidebar.error("Vector store failed to initialize.")
+            return None
+
         retriever_search_kwargs = {'k': k_val}
         if sem_type == "mmr" and str(mmr_l_val).lower() != "n/a":
-            try: mmr_l_float = float(mmr_l_val); mmr_fkf_float = float(mmr_fkf_val); fetch_k = int(k_val * mmr_fkf_float); retriever_search_kwargs['fetch_k'] = max(k_val + 5, fetch_k); retriever_search_kwargs['lambda_mult'] = mmr_l_float
-            except ValueError: stlit.warning("MMR settings invalid, using defaults."); retriever_search_kwargs['fetch_k'] = k_val + 5; retriever_search_kwargs['lambda_mult'] = 0.5
-        semantic_retriever_obj = vectorstore_for_retriever.as_retriever(search_type=sem_type, search_kwargs=retriever_search_kwargs); final_retriever_obj = semantic_retriever_obj
+            try:
+                mmr_l_float = float(mmr_l_val)
+                mmr_fkf_float = float(mmr_fkf_val)
+                fetch_k = int(k_val * mmr_fkf_float)
+                retriever_search_kwargs['fetch_k'] = max(k_val + 5, fetch_k)
+                retriever_search_kwargs['lambda_mult'] = mmr_l_float
+            except ValueError:
+                stlit.warning("MMR settings invalid, using defaults.")
+                retriever_search_kwargs['fetch_k'] = k_val + 5
+                retriever_search_kwargs['lambda_mult'] = 0.5
+        
+        semantic_retriever_obj = vectorstore_for_retriever.as_retriever(search_type=sem_type, search_kwargs=retriever_search_kwargs)
+        final_retriever_obj = semantic_retriever_obj
+
         if hybrid_flag:
-            try: bm25_ret_obj = BM25Retriever.from_documents(documents=doc_chunks_for_retriever); bm25_ret_obj.k = k_val; final_retriever_obj = EnsembleRetriever(retrievers=[bm25_ret_obj, semantic_retriever_obj], weights=[float(bm25_w_val), float(sem_w_val)])
-            except Exception as e: stlit.sidebar.error(f"BM25/Ensemble error: {e}. Using semantic only."); final_retriever_obj = semantic_retriever_obj
+            try:
+                bm25_ret_obj = BM25Retriever.from_documents(documents=doc_chunks_for_retriever)
+                bm25_ret_obj.k = k_val
+                final_retriever_obj = EnsembleRetriever(retrievers=[bm25_ret_obj, semantic_retriever_obj], weights=[float(bm25_w_val), float(sem_w_val)])
+            except Exception as e:
+                stlit.sidebar.error(f"BM25/Ensemble error: {e}. Using semantic only.")
+                final_retriever_obj = semantic_retriever_obj
+        
         return final_retriever_obj
+
     def setup_and_activate_lcel_chain(retriever_instance, doc_filename, doc_lang, settings_dict, session_id_prefix="doc_chat_"):
         if not retriever_instance: stlit.sidebar.error("Retriever is None in setup."); return False
         if not stlit.session_state.chat_llm: stlit.sidebar.error("Chat LLM is None in setup."); return False
@@ -191,51 +244,96 @@ with stlit.sidebar:
         stlit.session_state.active_retriever = retriever_instance
         stlit.session_state.update(document_language=doc_lang, document_processed_for_chat=True, active_document_filename=doc_filename, active_chain_settings=settings_dict.copy(), active_chat_mode="Document Q&A", document_chat_messages=[], active_doc_chat_session_id=session_id)
         return True
+
     if uploaded_file_ui:
-        if stlit.session_state.last_uploaded_filename_for_hash_check != uploaded_file_ui.name: stlit.session_state.active_hash_match_data = []; stlit.session_state.last_uploaded_filename_for_hash_check = uploaded_file_ui.name; stlit.session_state.action_for_matched_file = None
-        if stlit.button(f"Process NEW '{uploaded_file_ui.name}'", key="process_new_doc_lcel_btn_v3_final"): stlit.session_state.action_for_matched_file = "evaluate"
+        if stlit.session_state.last_uploaded_filename_for_hash_check != uploaded_file_ui.name:
+            stlit.session_state.active_hash_match_data = []
+            stlit.session_state.last_uploaded_filename_for_hash_check = uploaded_file_ui.name
+            stlit.session_state.action_for_matched_file = None
+
+        if stlit.button(f"Process NEW '{uploaded_file_ui.name}'", key="process_new_doc_lcel_btn_v3_final"):
+            stlit.session_state.action_for_matched_file = "evaluate"
+
         if stlit.session_state.action_for_matched_file:
-            if not (stlit.session_state.embeddings_generator and stlit.session_state.chat_llm): stlit.sidebar.error("LLMs not loaded."); stlit.session_state.action_for_matched_file = None
+            if not (stlit.session_state.embeddings_generator and stlit.session_state.chat_llm):
+                stlit.sidebar.error("LLMs not loaded.")
+                stlit.session_state.action_for_matched_file = None
             else:
                 with stlit.spinner(f"Processing '{uploaded_file_ui.name}': Checking for matches, processing text, and generating embeddings... This may take a moment."):
-                    uploaded_file_hash = metadata_store.calculate_file_hash(uploaded_file_ui); existing_docs_with_hash = metadata_store.get_metadata_by_file_hash(uploaded_file_hash) if uploaded_file_hash else []
+                    uploaded_file_hash = metadata_store.calculate_file_hash(uploaded_file_ui)
+                    existing_docs_with_hash = metadata_store.get_metadata_by_file_hash(uploaded_file_hash) if uploaded_file_hash else []
                     perform_new_processing = False
-                    if stlit.session_state.action_for_matched_file == "process_as_new_anyway": perform_new_processing = True; stlit.toast("Starting to process as new...", icon="⏳")
+
+                    if stlit.session_state.action_for_matched_file == "process_as_new_anyway":
+                        perform_new_processing = True
+                        stlit.toast("Starting to process as new...", icon="⏳")
                     elif existing_docs_with_hash and vector_store_choice_ui == "Qdrant" and stlit.session_state.action_for_matched_file == "evaluate":
-                        first_match = existing_docs_with_hash[0]; stlit.sidebar.info(f"Match: '{first_match['original_filename']}' (Qdrant: {first_match.get('qdrant_collection_name', 'N/A')})"); stlit.sidebar.subheader("Choose action for matched file:")
+                        first_match = existing_docs_with_hash[0]
+                        stlit.sidebar.info(f"Match: '{first_match['original_filename']}' (Qdrant: {first_match.get('qdrant_collection_name', 'N/A')})")
+                        stlit.sidebar.subheader("Choose action for matched file:")
                         col_act1, col_act2 = stlit.sidebar.columns(2)
-                        if col_act1.button(f"Activate Matched '{first_match['original_filename']}'", key=f"activate_hash_lcel_btn_final_{first_match.get('qdrant_collection_name', 'no_q_coll')[-6:]}"): stlit.session_state.action_for_matched_file = "activate_matched"; stlit.rerun()
-                        if col_act2.button("Process As New Anyway", key=f"process_new_anyway_lcel_btn_final_{first_match.get('qdrant_collection_name', 'no_q_coll_new')[-6:]}"): stlit.session_state.action_for_matched_file = "process_as_new_anyway"; stlit.rerun()
+                        if col_act1.button(f"Activate Matched '{first_match['original_filename']}'", key=f"activate_hash_lcel_btn_final_{first_match.get('qdrant_collection_name', 'no_q_coll')[-6:]}"):
+                            stlit.session_state.action_for_matched_file = "activate_matched"
+                            stlit.rerun()
+                        if col_act2.button("Process As New Anyway", key=f"process_new_anyway_lcel_btn_final_{first_match.get('qdrant_collection_name', 'no_q_coll_new')[-6:]}"):
+                            stlit.session_state.action_for_matched_file = "process_as_new_anyway"
+                            stlit.rerun()
                     elif stlit.session_state.action_for_matched_file == "activate_matched":
-                        if not existing_docs_with_hash : stlit.sidebar.error("Error: No matched document found for activation."); stlit.session_state.action_for_matched_file = None
+                        if not existing_docs_with_hash:
+                            stlit.sidebar.error("Error: No matched document found for activation.")
+                            stlit.session_state.action_for_matched_file = None
                         else:
-                            first_match = existing_docs_with_hash[0]; db_meta = first_match; q_coll = db_meta['qdrant_collection_name']; orig_fn = db_meta['original_filename']; p_path = db_meta['persistent_file_path']
-                            if not os.path.exists(p_path): stlit.sidebar.error(f"File for match not found: {p_path}."); stlit.session_state.action_for_matched_file = "evaluate"
+                            first_match = existing_docs_with_hash[0]
+                            db_meta = first_match
+                            q_coll = db_meta['qdrant_collection_name']
+                            orig_fn = db_meta['original_filename']
+                            p_path = db_meta['persistent_file_path']
+                            if not os.path.exists(p_path):
+                                stlit.sidebar.error(f"File for match not found: {p_path}.")
+                                stlit.session_state.action_for_matched_file = "evaluate"
                             else:
                                 act_set_current_ui = {"filename": orig_fn, "vector_store": "Qdrant", "qdrant_collection_name": q_coll, "semantic_type": semantic_retriever_selection_ui, "k": num_docs_to_retrieve_ui, "hybrid": use_hybrid_ui, "bm25_w": ensemble_bm25_weight_val if use_hybrid_ui else "N/A", "semantic_w": ensemble_semantic_weight_val if use_hybrid_ui else "N/A", "mmr_lambda": mmr_lambda_val if semantic_retriever_selection_ui == "mmr" else "N/A", "mmr_fetch_k_f": mmr_fetch_k_factor_val if semantic_retriever_selection_ui == "mmr" else "N/A", "map_reduce": use_map_reduce_ui}
                                 chunks_act = None
-                                if act_set_current_ui['hybrid']: chunks_act, _, _ = document_processor.extract_text_and_chunks(p_path, orig_fn)
-                                if act_set_current_ui['hybrid'] and not chunks_act: stlit.sidebar.warning("Hybrid Search: BM25 chunks could not be loaded. Using semantic only."); act_set_current_ui['hybrid'] = False
+                                if act_set_current_ui['hybrid']:
+                                    chunks_act, _, _ = document_processor.extract_text_and_chunks(p_path, orig_fn)
+                                if act_set_current_ui['hybrid'] and not chunks_act:
+                                    stlit.sidebar.warning("Hybrid Search: BM25 chunks could not be loaded. Using semantic only.")
+                                    act_set_current_ui['hybrid'] = False
                                 ret_act = build_retriever(chunks_act, "Qdrant", act_set_current_ui["semantic_type"], act_set_current_ui["k"], act_set_current_ui["hybrid"], act_set_current_ui["bm25_w"], act_set_current_ui["semantic_w"], act_set_current_ui["mmr_lambda"], act_set_current_ui["mmr_fetch_k_f"], q_coll, stlit.session_state.embeddings_generator, config.QDRANT_URL, config.QDRANT_API_KEY)
                                 if ret_act and setup_and_activate_lcel_chain(ret_act, orig_fn, db_meta.get('detected_language'), act_set_current_ui):
-                                    metadata_store.update_last_accessed_timestamp(q_coll); stlit.session_state.persisted_doc_metadata = metadata_store.get_all_qdrant_document_metadata_cached()
+                                    metadata_store.update_last_accessed_timestamp(q_coll)
+                                    stlit.session_state.persisted_doc_metadata = metadata_store.get_all_qdrant_document_metadata_cached()
                                     stlit.session_state.processed_documents_metadata[orig_fn] = {"qdrant_collection_name": q_coll, "all_chunks_as_docs": chunks_act, "language": db_meta.get('detected_language'), "settings": act_set_current_ui.copy(), "persistent_file_path_if_any": p_path, "content_hint": db_meta.get("content_hint")}
-                                    stlit.toast(f"Activated matched: '{orig_fn}'.", icon="✅"); stlit.session_state.action_for_matched_file = None; stlit.rerun()
-                                elif ret_act: stlit.sidebar.error(f"Failed to setup LCEL chain for matched doc '{orig_fn}'."); stlit.session_state.action_for_matched_file = "evaluate"
-                                else: stlit.sidebar.error(f"Failed to build retriever for matched doc '{orig_fn}'."); stlit.session_state.action_for_matched_file = "evaluate"
-                    elif (not existing_docs_with_hash and stlit.session_state.action_for_matched_file == "evaluate") or \
-                        (stlit.session_state.action_for_matched_file == "evaluate" and not existing_docs_with_hash):
-                        perform_new_processing = True; stlit.toast("No match found or processing as new. Starting...", icon="✨") if not existing_docs_with_hash else None
+                                    stlit.toast(f"Activated matched: '{orig_fn}'.", icon="✅")
+                                    stlit.session_state.action_for_matched_file = None
+                                    stlit.rerun()
+                                elif ret_act:
+                                    stlit.sidebar.error(f"Failed to setup LCEL chain for matched doc '{orig_fn}'.")
+                                    stlit.session_state.action_for_matched_file = "evaluate"
+                                else:
+                                    stlit.sidebar.error(f"Failed to build retriever for matched doc '{orig_fn}'.")
+                                    stlit.session_state.action_for_matched_file = "evaluate"
+                    elif (not existing_docs_with_hash and stlit.session_state.action_for_matched_file == "evaluate") or (stlit.session_state.action_for_matched_file == "evaluate" and not existing_docs_with_hash):
+                        perform_new_processing = True
+                        if not existing_docs_with_hash:
+                            stlit.toast("No match found or processing as new. Starting...", icon="✨")
+
                     if perform_new_processing:
                         persistent_file_actual_path = None
                         if vector_store_choice_ui == "Qdrant":
                             target_persistent_path = metadata_store.get_unique_persistent_filepath(uploaded_file_ui.name)
                             try:
-                                with open(target_persistent_path, "wb") as f: f.write(uploaded_file_ui.getvalue())
-                                persistent_file_actual_path = target_persistent_path; stlit.sidebar.caption(f"Saved to: {os.path.basename(persistent_file_actual_path)}")
-                            except Exception as e_save: stlit.sidebar.error(f"Save failed: {e_save}"); stlit.stop()
+                                with open(target_persistent_path, "wb") as f:
+                                    f.write(uploaded_file_ui.getvalue())
+                                persistent_file_actual_path = target_persistent_path
+                                stlit.sidebar.caption(f"Saved to: {os.path.basename(persistent_file_actual_path)}")
+                            except Exception as e_save:
+                                stlit.sidebar.error(f"Save failed: {e_save}")
+                                stlit.stop()
+                        
                         source_for_chunking = persistent_file_actual_path if persistent_file_actual_path else uploaded_file_ui
                         all_chunks, detected_lang, num_chunks = document_processor.extract_text_and_chunks(source_for_chunking, original_filename_for_display=uploaded_file_ui.name)
+                        
                         content_hint_text = None
                         if all_chunks and stlit.session_state.chat_llm:
                             try:
@@ -243,24 +341,41 @@ with stlit.sidebar:
                                 hint_prompt_template = ChatPromptTemplate.from_template("Create a very concise summary (1 sentence, max 20 words) or list up to 5 main keywords for the following text. Text: {text_input}")
                                 hint_chain = hint_prompt_template | stlit.session_state.chat_llm | StrOutputParser()
                                 content_hint_text = hint_chain.invoke({"text_input": hint_text_source})
-                            except Exception as e_hint: stlit.sidebar.warning(f"Content hint generation failed: {e_hint}")
+                            except Exception as e_hint:
+                                stlit.sidebar.warning(f"Content hint generation failed: {e_hint}")
+
                         if all_chunks:
                             current_proc_settings = {"filename": uploaded_file_ui.name, "vector_store": vector_store_choice_ui, "semantic_type": semantic_retriever_selection_ui, "k": num_docs_to_retrieve_ui, "hybrid": use_hybrid_ui, "bm25_w": ensemble_bm25_weight_val if use_hybrid_ui else "N/A", "semantic_w": ensemble_semantic_weight_val if use_hybrid_ui else "N/A", "mmr_lambda": mmr_lambda_val if semantic_retriever_selection_ui == "mmr" else "N/A", "mmr_fetch_k_f": mmr_fetch_k_factor_val if semantic_retriever_selection_ui == "mmr" else "N/A", "map_reduce": use_map_reduce_ui}
                             q_coll_name_new = None
-                            if vector_store_choice_ui == "Qdrant": q_coll_name_new = utils.normalize_filename_for_collection(os.path.basename(persistent_file_actual_path) if persistent_file_actual_path else uploaded_file_ui.name)
+                            if vector_store_choice_ui == "Qdrant":
+                                q_coll_name_new = utils.normalize_filename_for_collection(os.path.basename(persistent_file_actual_path) if persistent_file_actual_path else uploaded_file_ui.name)
+                            
                             retriever_new = build_retriever(all_chunks, vector_store_choice_ui, semantic_retriever_selection_ui, num_docs_to_retrieve_ui, use_hybrid_ui, ensemble_bm25_weight_val, ensemble_semantic_weight_val, mmr_lambda_val, mmr_fetch_k_factor_val, q_coll_name_new, stlit.session_state.embeddings_generator, config.QDRANT_URL, config.QDRANT_API_KEY)
+                            
                             if retriever_new and setup_and_activate_lcel_chain(retriever_new, uploaded_file_ui.name, detected_lang, current_proc_settings):
                                 stlit.session_state.processed_documents_metadata[uploaded_file_ui.name] = {"qdrant_collection_name": q_coll_name_new, "all_chunks_as_docs": all_chunks, "language": detected_lang, "settings": current_proc_settings.copy(), "persistent_file_path_if_any": persistent_file_actual_path, "content_hint": content_hint_text}
                                 if vector_store_choice_ui == "Qdrant" and q_coll_name_new and persistent_file_actual_path:
                                     final_hash_for_db = uploaded_file_hash or metadata_store.calculate_file_hash(uploaded_file_ui)
                                     if metadata_store.add_or_update_document_metadata(uploaded_file_ui.name, persistent_file_actual_path, q_coll_name_new, final_hash_for_db, detected_lang, current_proc_settings.copy(), num_chunks, content_hint=content_hint_text):
                                         stlit.session_state.persisted_doc_metadata = metadata_store.get_all_qdrant_document_metadata_cached()
-                                    else: stlit.sidebar.warning("Failed to save metadata for new Qdrant document.")
-                                stlit.sidebar.success(f"'{uploaded_file_ui.name}' processed and activated."); stlit.session_state.action_for_matched_file = None; stlit.rerun()
-                            elif retriever_new: stlit.sidebar.error(f"Failed to setup chain for NEW '{uploaded_file_ui.name}'."); stlit.session_state.action_for_matched_file = "evaluate"
-                            else: stlit.sidebar.error(f"Failed to build retriever for NEW '{uploaded_file_ui.name}'."); stlit.session_state.action_for_matched_file = "evaluate"
-                        else: stlit.sidebar.error(f"Could not extract chunks from '{uploaded_file_ui.name}'."); stlit.session_state.action_for_matched_file = None
-                    if stlit.session_state.action_for_matched_file == "evaluate" and not (existing_docs_with_hash and vector_store_choice_ui == "Qdrant"): stlit.session_state.action_for_matched_file = None
+                                    else:
+                                        stlit.sidebar.warning("Failed to save metadata for new Qdrant document.")
+                                stlit.sidebar.success(f"'{uploaded_file_ui.name}' processed and activated.")
+                                stlit.session_state.action_for_matched_file = None
+                                stlit.rerun()
+                            elif retriever_new:
+                                stlit.sidebar.error(f"Failed to setup chain for NEW '{uploaded_file_ui.name}'.")
+                                stlit.session_state.action_for_matched_file = "evaluate"
+                            else:
+                                stlit.sidebar.error(f"Failed to build retriever for NEW '{uploaded_file_ui.name}'.")
+                                stlit.session_state.action_for_matched_file = "evaluate"
+                        else:
+                            stlit.sidebar.error(f"Could not extract chunks from '{uploaded_file_ui.name}'.")
+                            stlit.session_state.action_for_matched_file = None
+
+                    if stlit.session_state.action_for_matched_file == "evaluate" and not (existing_docs_with_hash and vector_store_choice_ui == "Qdrant"):
+                        stlit.session_state.action_for_matched_file = None
+
     stlit.sidebar.divider(); stlit.sidebar.header("3. Activate Document for Q&A (LCEL)")
     stlit.sidebar.subheader("A. From this session")
     processed_doc_names_session = list(stlit.session_state.processed_documents_metadata.keys())
@@ -425,49 +540,16 @@ with stlit.sidebar:
             except Exception as e: stlit.warning(f"Could not fetch collection info: {str(e)}")
         
         if stlit.sidebar.button(f"Activate '{disp_fn_direct}' (Direct Qdrant)", key=f"activate_direct_q_lcel_btn_final_{sanitized_direct_q_key_final}"):
-            # --- START: CORRECTED LOGIC FOR DIRECT QDRANT ACTIVATION ---
-            # For a direct Qdrant collection, we do not have the original file.
-            # Therefore, hybrid search (BM25) is impossible. We must force it off.
             use_hybrid_for_this_activation = use_hybrid_ui
-
-            # If the user has the hybrid checkbox ticked, inform them it's being turned off for this specific case.
             if use_hybrid_for_this_activation:
                 stlit.sidebar.warning("Hybrid search (BM25) is not supported for Direct Qdrant collections as the original file is not available. Falling back to semantic search only.")
-                use_hybrid_for_this_activation = False # Unconditionally disable it.
+                use_hybrid_for_this_activation = False
             
-            # Build the settings dictionary for this activation with the GUARANTEED correct hybrid flag.
-            act_set_direct_q = {
-                "filename": disp_fn_direct, 
-                "vector_store": "Qdrant", 
-                "qdrant_collection_name_if_direct": q_coll_direct, 
-                "semantic_type": semantic_retriever_selection_ui, 
-                "k": num_docs_to_retrieve_ui, 
-                "hybrid": use_hybrid_for_this_activation, # This will now be False
-                "bm25_w": "N/A", 
-                "semantic_w": "N/A", 
-                "mmr_lambda": mmr_lambda_val if semantic_retriever_selection_ui == "mmr" else "N/A", 
-                "mmr_fetch_k_f": mmr_fetch_k_factor_val if semantic_retriever_selection_ui == "mmr" else "N/A", 
-                "map_reduce": use_map_reduce_ui
-            }
+            act_set_direct_q = {"filename": disp_fn_direct, "vector_store": "Qdrant", "qdrant_collection_name_if_direct": q_coll_direct, "semantic_type": semantic_retriever_selection_ui, "k": num_docs_to_retrieve_ui, "hybrid": use_hybrid_for_this_activation, "bm25_w": "N/A", "semantic_w": "N/A", "mmr_lambda": mmr_lambda_val if semantic_retriever_selection_ui == "mmr" else "N/A", "mmr_fetch_k_f": mmr_fetch_k_factor_val if semantic_retriever_selection_ui == "mmr" else "N/A", "map_reduce": use_map_reduce_ui}
             
-            # `chunks_direct` must be None because we have no file to create them from for BM25.
             chunks_direct = None
 
-            ret_direct = build_retriever(
-                chunks_direct, 
-                "Qdrant", 
-                act_set_direct_q["semantic_type"], 
-                act_set_direct_q["k"], 
-                act_set_direct_q["hybrid"], # Pass the corrected (False) flag
-                act_set_direct_q["bm25_w"], 
-                act_set_direct_q["semantic_w"], 
-                act_set_direct_q["mmr_lambda"], 
-                act_set_direct_q["mmr_fetch_k_f"], 
-                q_coll_direct, 
-                stlit.session_state.embeddings_generator, 
-                config.QDRANT_URL, 
-                config.QDRANT_API_KEY
-            )
+            ret_direct = build_retriever(chunks_direct, "Qdrant", act_set_direct_q["semantic_type"], act_set_direct_q["k"], act_set_direct_q["hybrid"], act_set_direct_q["bm25_w"], act_set_direct_q["semantic_w"], act_set_direct_q["mmr_lambda"], act_set_direct_q["mmr_fetch_k_f"], q_coll_direct, stlit.session_state.embeddings_generator, config.QDRANT_URL, config.QDRANT_API_KEY)
 
             if ret_direct:
                 if setup_and_activate_lcel_chain(ret_direct, disp_fn_direct, None, act_set_direct_q): 
@@ -476,7 +558,6 @@ with stlit.sidebar:
                     stlit.sidebar.error(f"Failed to setup LCEL chain for Direct Qdrant '{disp_fn_direct}'.")
             else: 
                 stlit.sidebar.error(f"Failed to build retriever for Direct Qdrant '{disp_fn_direct}'.")
-            # --- END: CORRECTED LOGIC ---
 
         confirm_key_direct_q = f"confirm_delete_direct_q_pending_final_{sanitized_direct_q_key_final}"
         if stlit.sidebar.button(f"🗑️ Delete '{disp_fn_direct}' from Qdrant Server", key=f"delete_direct_q_btn_final_{sanitized_direct_q_key_final}"):
@@ -546,7 +627,7 @@ if not stlit.session_state.get("embeddings_generator") or not stlit.session_stat
 
 # --- Main Page Layout ---
 if stlit.session_state.active_chat_mode == "Document Q&A":
-    stlit.header("📄 Chat with Your Document (LCEL)")
+    stlit.header("📄 Chat with Your Document")
     if stlit.session_state.document_processed_for_chat and stlit.session_state.active_document_filename and stlit.session_state.active_retriever:
         active_s = stlit.session_state.active_chain_settings; doc_fn_display = stlit.session_state.active_document_filename
         doc_lang_disp_val = stlit.session_state.processed_documents_metadata.get(doc_fn_display, {}).get("language", "N/A") if stlit.session_state.processed_documents_metadata.get(doc_fn_display) else stlit.session_state.document_language or "N/A"

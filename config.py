@@ -7,7 +7,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # --- Application Configuration ---
 PAGE_TITLE = "Chat & Summarize"
-APP_TITLE = "Chat with Documents & Summarize YouTube (using Ollama)"
+APP_TITLE = "Chat with Documents & Summarize YouTube"
 
 # --- Model Configuration ---
 EMBEDDING_MODEL_NAME = "bge-m3:latest" 
